@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Diamond CMV Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <style>
+    body {
+      font-family: sans-serif;
+      background: #fff;
+      margin: 20px;
+    }
+
+    h1 {
+      text-align: center;
+      margin-bottom: 10px;
+    }
+
+    /* stats bar at the top */
+    #stats {
+      display: flex;
+      gap: 40px;
+      background: #f4f4f4;
+      border-radius: 8px;
+      padding: 14px 24px;
+      margin-bottom: 20px;
+      align-items: center;
+    }
+
+    #stats div {
+      text-align: center;
+    }
+
+    #stats span {
+      font-size: 1.4em;
+      font-weight: bold;
+    }
+
+    /* side by side layout for the two charts */
+    #charts {
+      display: flex;
+      gap: 30px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+
+    #reset-btn {
+      display: block;
+      margin: 0 auto 20px auto;
+      padding: 8px 18px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    /* brush rectangle styling */
+    .selection {
+      fill: steelblue;
+      fill-opacity: 0.15;
+      stroke: steelblue;
+      stroke-width: 1.5px;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Diamond Dataset — Coordinated Multiple View Dashboard</h1>
+
+  <button id="reset-btn">Reset All Brushes</button>
+
+  <!-- summary stats -->
+  <div id="stats">
+    <div><strong>Selected Diamonds</strong><br/><span id="stat-count">-</span></div>
+    <div><strong>Avg Carat</strong><br/><span id="stat-carat">-</span></div>
+    <div><strong>Avg Price</strong><br/><span id="stat-price">-</span></div>
+    <div><strong>Avg Depth</strong><br/><span id="stat-depth">-</span></div>
+  </div>
+
+  <!-- two charts side by side -->
+  <div id="charts">
+    <div id="scatter"></div>
+    <div id="bar"></div>
+  </div>
+
+  <script>
+    // cut order stays consistent across both charts
+    const cutOrder = ["Fair", "Good", "Very Good", "Premium", "Ideal"];
+
+    // one color scale used by both charts so colors always match
+    const colorScale = d3.scaleOrdinal()
+      .domain(cutOrder)
+      .range(["#e41a1c", "#ff7f00", "#4daf4a", "#377eb8", "#984ea3"]);
+
+    // shared state - these track what is currently selected
+    let brushedDiamonds = null; // null means no brush active, show all
+    let selectedCut = null;     // null means no bar is clicked
+
+    // load data from cdn
+    d3.csv("https://cdn.jsdelivr.net/npm/@observablehq/sample-datasets/diamonds.csv", d3.autoType)
+      .then(raw => {
+
+        // filter out rows with missing values
+        // autoType turns blanks into NaN so we check for that too
+        const diamonds = raw.filter(d =>
+          d.carat != null && !isNaN(d.carat) &&
+          d.price != null && !isNaN(d.price) &&
+          d.depth != null && !isNaN(d.depth) &&
+          d.cut   != null && d.cut !== ""
+        );
+
+        // build both charts once data is loaded
+        drawScatter(diamonds);
+        drawBar(diamonds);
+        updateStats(diamonds);
+
+        // reset button clears both brushes and goes back to full dataset
+        document.getElementById("reset-btn").onclick = () => {
+          brushedDiamonds = null;
+          selectedCut = null;
+          drawScatter(diamonds);
+          drawBar(diamonds);
+          updateStats(diamonds);
+        };
+      });
+
+    // --- SCATTER PLOT ---
+    function drawScatter(diamonds) {
+      // clear previous chart before redrawing
+      d3.select("#scatter").selectAll("*").remove();
+
+      const width = 620, height = 450;
+      const margin = { top: 20, right: 130, bottom: 60, left: 70 };
+      const innerW = width - margin.left - margin.right;
+      const innerH = height - margin.top - margin.bottom;
+
+      const svg = d3.select("#scatter")
+        .append("svg")
+        .attr("width", width)
+        .attr("height", height);
+
+      const g = svg.append("g")
+        .attr("transform", `translate(${margin.left},${margin.top})`);
+
+      // x scale maps carat to pixel position
+      const xScale = d3.scaleLinear()
+        .domain(d3.extent(diamonds, d => d.carat)).nice()
+        .range([0, innerW]);
+
+      // y scale maps price to pixel, flipped so higher price = higher on chart
+      const yScale = d3.scaleLinear()
+        .domain(d3.extent(diamonds, d => d.price)).nice()
+        .range([innerH, 0]);
+
+      // draw axes
+      g.append("g")
+        .attr("transform", `translate(0,${innerH})`)
+        .call(d3.axisBottom(xScale));
+
+      g.append("g")
+        .call(d3.axisLeft(yScale));
+
+      // x axis label
+      g.append("text")
+        .attr("x", innerW / 2)
+        .attr("y", innerH + 45)
+        .attr("text-anchor", "middle")
+        .style("font-size", "13px")
+        .text("Carat");
+
+      // y axis label rotated vertically
+      g.append("text")
+        .attr("transform", "rotate(-90)")
+        .attr("x", -innerH / 2)
+        .attr("y", -55)
+        .attr("text-anchor", "middle")
+        .style("font-size", "13px")
+        .text("Price (USD)");
+
+      // figure out which diamonds should be highlighted
+      // if a bar was clicked, only show that cut, otherwise use scatter brush
+      const activeSet = selectedCut
+        ? diamonds.filter(d => d.cut === selectedCut)
+        : brushedDiamonds;
+
+      // draw one circle per diamond
+      g.selectAll("circle")
+        .data(diamonds)
+        .join("circle")
+        .attr("cx", d => xScale(d.carat))
+        .attr("cy", d => yScale(d.price))
+        .attr("r", 3)
+        .attr("fill", d => colorScale(d.cut))
+        // fade out dots that are not in the active selection
+        .attr("opacity", d => {
+          if (!activeSet) return 0.7; // nothing selected, show everything
+          return activeSet.includes(d) ? 0.9 : 0.08;
+        })
+        .style("pointer-events", "none"); // dots shouldnt block the brush overlay
+
+      // legend top right
+      const legend = svg.append("g")
+        .attr("transform", `translate(${width - margin.right + 10}, ${margin.top})`);
+
+      cutOrder.forEach((cut, i) => {
+        const row = legend.append("g").attr("transform", `translate(0, ${i * 20})`);
+        row.append("rect").attr("width", 12).attr("height", 12).attr("fill", colorScale(cut));
+        row.append("text").attr("x", 16).attr("y", 11).style("font-size", "11px").text(cut);
+      });
+
+      // d3.brush creates the rectangle drag selection
+      // extent limits brush area to inside the chart only
+      const brush = d3.brush()
+        .extent([[0, 0], [innerW, innerH]])
+        .on("brush end", function(event) {
+          if (!event.selection) {
+            // brush cleared, reset everything
+            brushedDiamonds = null;
+            selectedCut = null;
+            drawScatter(diamonds);
+            drawBar(diamonds);
+            updateStats(diamonds);
+            return;
+          }
+
+          // get pixel coords of the brush rectangle
+          const [[x0, y0], [x1, y1]] = event.selection;
+
+          // convert pixel coords back to data values using invert
+          const caratMin = xScale.invert(x0);
+          const caratMax = xScale.invert(x1);
+          // y is flipped so y0 (top of rect) = higher price
+          const priceMax = yScale.invert(y0);
+          const priceMin = yScale.invert(y1);
+
+          // filter diamonds that fall inside the brush rectangle
+          brushedDiamonds = diamonds.filter(d =>
+            d.carat >= caratMin && d.carat <= caratMax &&
+            d.price >= priceMin && d.price <= priceMax
+          );
+
+          selectedCut = null; // clear bar selection when scatter brush is used
+
+          // redraw bar chart and stats with the new selection
+          drawBar(diamonds);
+          updateStats(diamonds);
+
+          // fade out dots outside the brush, highlight ones inside
+          g.selectAll("circle")
+            .attr("opacity", d =>
+              d.carat >= caratMin && d.carat <= caratMax &&
+              d.price >= priceMin && d.price <= priceMax
+                ? 0.9 : 0.08
+            );
+        });
+
+      // add brush overlay on top of everything else
+      g.append("g")
+        .attr("class", "brush")
+        .call(brush);
+    }
+
+    // --- BAR CHART ---
+    function drawBar(diamonds) {
+      // clear previous chart
+      d3.select("#bar").selectAll("*").remove();
+
+      // use brushed diamonds if any, otherwise show all
+      const source = brushedDiamonds ? brushedDiamonds : diamonds;
+
+      // count diamonds per cut in the current source
+      const counts = cutOrder.map(cut => ({
+        cut,
+        count: source.filter(d => d.cut === cut).length
+      }));
+
+      const width = 420, height = 400;
+      const margin = { top: 20, right: 20, bottom: 60, left: 65 };
+      const innerW = width - margin.left - margin.right;
+      const innerH = height - margin.top - margin.bottom;
+
+      const svg = d3.select("#bar")
+        .append("svg")
+        .attr("width", width)
+        .attr("height", height);
+
+      const g = svg.append("g")
+        .attr("transform", `translate(${margin.left},${margin.top})`);
+
+      const xScale = d3.scaleBand()
+        .domain(cutOrder)
+        .range([0, innerW])
+        .padding(0.2);
+
+      const yScale = d3.scaleLinear()
+        .domain([0, d3.max(counts, d => d.count)]).nice()
+        .range([innerH, 0]);
+
+      g.append("g")
+        .attr("transform", `translate(0,${innerH})`)
+        .call(d3.axisBottom(xScale));
+
+      g.append("g")
+        .call(d3.axisLeft(yScale));
+
+      // x axis label
+      g.append("text")
+        .attr("x", innerW / 2)
+        .attr("y", innerH + 48)
+        .attr("text-anchor", "middle")
+        .style("font-size", "13px")
+        .text("Cut Quality");
+
+      // y axis label
+      g.append("text")
+        .attr("transform", "rotate(-90)")
+        .attr("x", -innerH / 2)
+        .attr("y", -52)
+        .attr("text-anchor", "middle")
+        .style("font-size", "13px")
+        .text("Count");
+
+      // draw bars
+      g.selectAll("rect")
+        .data(counts)
+        .join("rect")
+        .attr("x", d => xScale(d.cut))
+        .attr("y", d => yScale(d.count))
+        .attr("width", xScale.bandwidth())
+        .attr("height", d => innerH - yScale(d.count))
+        .attr("fill", d => colorScale(d.cut))
+        // fade out bars that are not the selected cut
+        .attr("opacity", d => !selectedCut || selectedCut === d.cut ? 0.85 : 0.2)
+        .style("cursor", "pointer")
+        .on("click", function(event, d) {
+          if (selectedCut === d.cut) {
+            // clicking same bar again clears the selection
+            selectedCut = null;
+            brushedDiamonds = null;
+          } else {
+            // clicking a new bar filters to just that cut
+            selectedCut = d.cut;
+            brushedDiamonds = diamonds.filter(row => row.cut === d.cut);
+          }
+          // redraw everything with new selection
+          drawScatter(diamonds);
+          drawBar(diamonds);
+          updateStats(diamonds);
+        });
+
+      // count labels on top of each bar
+      g.selectAll(".bar-label")
+        .data(counts)
+        .join("text")
+        .attr("class", "bar-label")
+        .attr("x", d => xScale(d.cut) + xScale.bandwidth() / 2)
+        .attr("y", d => yScale(d.count) - 4)
+        .attr("text-anchor", "middle")
+        .style("font-size", "11px")
+        .text(d => d.count);
+    }
+
+    // --- SUMMARY STATS ---
+    function updateStats(diamonds) {
+      // show stats for selected diamonds, or all if nothing is selected
+      const data = brushedDiamonds ? brushedDiamonds : diamonds;
+
+      document.getElementById("stat-count").textContent = data.length;
+      document.getElementById("stat-carat").textContent = d3.mean(data, d => d.carat).toFixed(3);
+      document.getElementById("stat-price").textContent = "$" + d3.mean(data, d => d.price).toFixed(2);
+      document.getElementById("stat-depth").textContent = d3.mean(data, d => d.depth).toFixed(2) + "%";
+    }
+  </script>
+</body>
+</html>
