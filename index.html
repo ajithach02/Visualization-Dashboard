@@ -95,7 +95,7 @@
     let selectedCut = null;     // null means no bar is clicked
 
     // load data from cdn
-    d3.csv("https://cdn.jsdelivr.net/npm/@observablehq/sample-datasets/diamonds.csv", d3.autoType)
+    d3.csv("diamonds.csv", d3.autoType)
       .then(raw => {
 
         // filter out rows with missing values
